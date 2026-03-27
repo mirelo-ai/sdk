@@ -1,0 +1,32 @@
+{
+  "name": "@mirelo/sdk",
+  "version": "1.0.0",
+  "description": "Official Mirelo API SDK",
+  "license": "MIT",
+  "author": "Mirelo AI GmbH",
+  "homepage": "https://mirelo.ai",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mirelo-ai/sdk"
+  },
+  "files": [
+    "src"
+  ],
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "lint": "oxlint --tsconfig tsconfig.json .",
+    "lint:fix": "oxlint --tsconfig tsconfig.json --fix .",
+    "lint:ci": "oxlint --tsconfig tsconfig.json --max-warnings=0 .",
+    "typecheck": "tsc --noEmit",
+    "oxfmt:check": "oxfmt --check .",
+    "oxfmt:fix": "oxfmt --write .",
+    "static-analysis": "bun run lint:ci && bun run typecheck && bun run oxfmt:check"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}
