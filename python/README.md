@@ -4,6 +4,8 @@ Official Python SDK for the [Mirelo](https://mirelo.ai) API v2.
 
 Supports both synchronous and async usage via `httpx`.
 
+**API reference:** [api.mirelo.ai/docs](https://api.mirelo.ai/docs)
+
 ## Installation
 
 ```bash

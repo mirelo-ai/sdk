@@ -4,6 +4,8 @@ Official JavaScript/TypeScript SDK for the [Mirelo](https://mirelo.ai) API v2.
 
 Works in any environment that supports `fetch` and `Uint8Array`: Node.js, browsers, Adobe UXP, Deno, Bun, and more — no Node.js-specific APIs are used.
 
+**API reference:** [api.mirelo.ai/docs](https://api.mirelo.ai/docs)
+
 ## Installation
 
 ```bash

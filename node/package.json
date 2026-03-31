@@ -1,6 +1,6 @@
 {
   "name": "@mirelo/sdk",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Official Mirelo API SDK",
   "homepage": "https://mirelo.ai",
   "license": "MIT",
@@ -17,8 +17,8 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
     }
   },
   "scripts": {
