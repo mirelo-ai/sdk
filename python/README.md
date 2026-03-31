@@ -7,7 +7,7 @@ Supports both synchronous and async usage via `httpx`.
 ## Installation
 
 ```bash
-pip install mirelo
+pip install mirelo-sdk
 ```
 
 ## Quick start — sync
@@ -171,6 +171,8 @@ video = Video.from_url("https://example.com/clip.mp4")
 with open("clip.mp4", "rb") as f:
     video = Video.from_bytes(f.read(), content_type="video/mp4")
 ```
+
+When `from_url` is used, the API fetches the first **128 KB** of the URL to validate the video before processing.
 
 When `from_bytes` is used, the SDK automatically:
 

@@ -7,15 +7,15 @@ Works in any environment that supports `fetch` and `Uint8Array`: Node.js, browse
 ## Installation
 
 ```bash
-npm install mirelo
+npm install @mirelo/sdk
 # or
-bun add mirelo
+bun add @mirelo/sdk
 ```
 
 ## Quick start
 
 ```typescript
-import { MireloClient, Video, MireloError } from "mirelo";
+import { MireloClient, Video, MireloError } from "@mirelo/sdk";
 
 const client = new MireloClient("sk-your-key");
 
@@ -150,6 +150,8 @@ const video = Video.fromUrl("https://example.com/clip.mp4");
 // Node.js Buffer extends Uint8Array and works here directly.
 const video = Video.fromBytes(bytes, "video/mp4");
 ```
+
+When `fromUrl` is used, the API fetches the first **128 KB** of the URL to validate the video before processing.
 
 When `fromBytes` is used, the SDK automatically:
 
