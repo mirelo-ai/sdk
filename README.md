@@ -67,6 +67,7 @@ with MireloClient("sk-your-key") as client:
 
 - Full Node.js SDK docs: [node/README.md](node/README.md)
 - Full Python SDK docs: [python/README.md](python/README.md)
+- OpenAPI spec: [openapi.yaml](openapi.yaml)
 - API reference: [mirelo.ai/docs](https://mirelo.ai/docs)
 
 ## License
