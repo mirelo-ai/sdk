@@ -7,15 +7,15 @@ Works in any environment that supports `fetch` and `Uint8Array`: Node.js, browse
 ## Installation
 
 ```bash
-npm install mirelo
+npm install @mirelo/sdk
 # or
-bun add mirelo
+bun add @mirelo/sdk
 ```
 
 ## Quick start
 
 ```typescript
-import { MireloClient, Video, MireloError } from "mirelo";
+import { MireloClient, Video, MireloError } from "@mirelo/sdk";
 
 const client = new MireloClient("sk-your-key");
 

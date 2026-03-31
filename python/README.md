@@ -7,7 +7,7 @@ Supports both synchronous and async usage via `httpx`.
 ## Installation
 
 ```bash
-pip install mirelo
+pip install mirelo-sdk
 ```
 
 ## Quick start — sync
