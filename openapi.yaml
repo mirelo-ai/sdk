@@ -1,0 +1,2010 @@
+openapi: 3.0.3
+info:
+  title: Mirelo AI API
+  version: 2.0.0
+  description: |-
+    The Mirelo API lets you add AI-generated audio to video. You can generate sound effects from a text prompt or directly from a video, using the audio-visual context of the footage to create matching sounds. Results are returned as audio URLs ready to mix or play back.
+
+    ## Authentication
+
+    All requests require an API key passed as a Bearer token:
+
+    ```
+    Authorization: Bearer sk-your-key-here
+    ```
+
+    Keys begin with `sk-`. You can generate keys in the [Mirelo dashboard](https://studio.mirelo.ai/api-keys).
+
+    ## Credits
+
+    Generation costs credits. The number of credits consumed depends on the generation type, the duration requested, and the number of samples. Credits are deducted only on success — failed or errored generations are not charged. Use the `/preflight` endpoint on any generation route to see the exact cost before committing.
+
+    ## Pricing
+
+    Credit costs vary by model. For full model pricing details — including credits per second for each model — see the [Mirelo pricing page](https://www.mirelo.ai/pricing).
+
+    ## Sync vs Async
+
+    Every generation endpoint has two modes: **sync** and **async**.
+
+    - **`/sync`** blocks until generation completes and returns audio URLs directly. Simple — one request, one response. Suitable for short durations (≤ 10 seconds) and server-side scripts. Note: HTTP connections time out after ~30 seconds in most environments, so sync is unreliable for longer generations.
+    - **`/jobs`** returns immediately with a `job_id` and an estimated completion time. Poll `GET .../jobs/{job_id}` until `status` is `"succeeded"` or `"errored"`. Recommended for browser environments, longer durations, and production integrations where you need a responsive UI.
+
+    **Rule of thumb:** use `/sync` for `duration_ms` ≤ 10000 and `/jobs` for anything longer.
+
+    ## Preflight
+
+    Before triggering generation, call `GET .../preflight` on any generation endpoint to get the exact credit cost and estimated duration. Use it to confirm costs in your UI or build a progress bar.
+
+    `credits` is exact and will match what gets deducted if you proceed. `estimated_ms` is a statistical estimate calibrated to cover ~98% of real jobs at that duration.
+
+    ## Model Versions
+
+    The model version is part of the URL path (e.g., `/v2/text-to-sfx/v1.5/sync`). Each model version has its own parameter contract. Pin the version you want — requesting an unsupported version returns `404`.
+
+    ## Errors
+
+    All errors follow a consistent shape:
+
+    ```json
+    { "error": { "code": "insufficient_credits", "message": "...", "http_status": 402 } }
+    ```
+
+    `code` is always one of a defined set of values (listed below), so you can branch on it reliably. Internal error details are never leaked.
+
+    Standard HTTP status codes apply: `400` for bad input, `401` for missing or invalid key, `402` for insufficient credits, `404` for unknown resource or job, `422` for generation failures, `500` for unexpected server errors.
+
+    **Error codes:**
+
+    | Code | HTTP | Description |
+    |------|------|-------------|
+    | `invalid_request` | 400 | Bad input — check your parameters |
+    | `video_url_unreachable` | 400 | Video URL returned a non-2xx response during the video URL check — check the URL is public and has not expired |
+    | `video_format_unsupported` | 400 | Video container not recognized — supported containers are MP4, MOV, WebM, and MKV |
+    | `video_too_short` | 400 | Video is shorter than `start_offset_ms` + `duration_ms` — the error message includes the exact lengths |
+    | `invalid_video` | 422 | Video could not be decoded by the generation service — use H.264, VP8, or VP9 and ensure the file is not corrupted |
+    | `invalid_asset` | 422 | Asset not found or inaccessible |
+    | `insufficient_credits` | 402 | Not enough credits — top up your balance |
+    | `generation_failed` | 502 | Upstream generation error — retry or contact support |
+    | `generation_timeout` | 504 | Job took too long — retry or contact support |
+    | `job_not_found` | 404 | Job doesn't exist, has expired (24h TTL), or belongs to another key |
+    | `server_error` | 500 | Unexpected server error — retry or contact support |
+
+    ## Video Input
+
+    All video endpoints accept two ways to provide a video:
+
+    - **URL** — pass `{type: "url", video_url: "https://..."}`. The URL must be publicly accessible (no auth required). See the Video URL Check section for supported formats and hosting recommendations.
+    - **Asset** — pre-upload your video in three steps:
+      1. Call `POST /v2/assets` to create an asset. The response contains an `asset_id` and a pre-signed `upload_url`.
+      2. Upload your video file directly to the `upload_url` via an HTTP `PUT` request (no API key needed — the URL is pre-signed).
+      3. Use the `asset_id` from step 1 in your generation request: `{type: "asset", asset_id: "..."}`.
+
+      Asset IDs stay valid for **24 hours** after upload.
+
+    Use assets when your video is not publicly accessible, when you want to avoid re-uploading the same file for multiple generation calls, or when your URL is a short-lived signed token that may expire before the generation runs.
+
+    ## Video URL Check
+
+    All video endpoints (`video-to-sfx`) perform a lightweight video URL check before dispatching to any generation service. This catches common problems early and returns a clear error before any credits are at risk.
+
+    **What the check does:**
+
+    The API fetches the first 128 KB of your video via an HTTP Range request. From those bytes it:
+
+    1. Verifies the URL returns a 2xx response (`video_url_unreachable` if not)
+    2. Identifies the container format from the file header (`video_format_unsupported` if unrecognized)
+    3. Parses the container's duration header and validates it covers `start_offset_ms` + `duration_ms` (`video_too_short` if not — the error message includes the exact values)
+
+    **Supported containers:** MP4, MOV, M4V, WebM, MKV. These cover the vast majority of real-world video files.
+
+    **Hosting recommendations:**
+
+    - Use S3, Google Cloud Storage, Cloudflare R2, or any major CDN — all support HTTP Range requests and respond quickly
+    - Avoid URLs that require cookies, auth headers, or short-lived signed tokens that may expire between the video URL check and the generation call
+    - If your MP4 was encoded without web-optimisation (`moov` atom at end of file), the check may fall back to a second range fetch; this still resolves well within the timeout on any CDN
+    - If you see `video_format_unsupported` for a valid MP4, re-encode with: `ffmpeg -i input.mp4 -c copy -movflags faststart output.mp4`
+
+    ## SDKs
+
+    Official SDKs are available for Node.js/TypeScript and Python:
+
+    - **Node.js / TypeScript** — [`@mirelo/sdk`](https://www.npmjs.com/package/@mirelo/sdk): `npm install @mirelo/sdk`
+    - **Python** — [`mirelo-sdk`](https://pypi.org/project/mirelo-sdk/): `pip install mirelo-sdk`
+
+    Source and full documentation: [github.com/mirelo-ai/sdk](https://github.com/mirelo-ai/sdk)
+  contact:
+    name: Mirelo Support
+    url: https://mirelo.ai
+    email: info@mirelo.ai
+servers:
+  - url: https://api.mirelo.ai
+    description: Production API
+security:
+  - BearerAuth: []
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: API key prefixed with sk-. Obtain from the Mirelo dashboard.
+tags:
+  - name: Sound Effects
+    description: Generate sound effects from text or video
+  - name: Assets
+    description: Upload and manage video assets
+  - name: Account
+    description: Account and credit information
+paths:
+  /v2/text-to-sfx/v1.5/preflight:
+    get:
+      operationId: textToSfxPreflight
+      summary: Preflight — text-to-sfx v1.5
+      description: Returns the exact credit cost and estimated duration for a text-to-sfx generation. No generation occurs, no credits are deducted.
+      tags:
+        - Sound Effects
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: duration_ms
+          in: query
+          schema:
+            type: integer
+            default: 10000
+          description: Duration in milliseconds
+        - name: num_samples
+          in: query
+          schema:
+            type: integer
+            default: 1
+          description: Number of samples
+      responses:
+        '200':
+          description: Credit cost and ETA
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - credits
+                  - estimated_ms
+                properties:
+                  credits:
+                    type: integer
+                    description: Exact credit cost — matches what will be deducted on success
+                  estimated_ms:
+                    type: integer
+                    description: Estimated completion time in milliseconds (p98 calibrated)
+        '400':
+          description: Invalid request — missing or malformed parameters
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+        '401':
+          description: Unauthorized — missing or invalid Bearer token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+        '402':
+          description: Insufficient credits
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+        '500':
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+  /v2/text-to-sfx/v1.5/sync:
+    post:
+      operationId: textToSfxSync
+      summary: Generate SFX from text (sync)
+      description: Generate sound effects from a text prompt. Blocks until complete. Recommended for `duration_ms` ≤ 10000.
+      tags:
+        - Sound Effects
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - prompt
+              properties:
+                prompt:
+                  type: string
+                  maxLength: 5000
+                  description: Text description of the sound to generate
+                  example: rain falling on leaves
+                duration_ms:
+                  type: integer
+                  minimum: 1000
+                  maximum: 10000
+                  default: 10000
+                  description: Duration in milliseconds (max 10000ms). Defaults to 10000.
+                num_samples:
+                  type: integer
+                  minimum: 1
+                  maximum: 4
+                  default: 1
+                  description: Number of audio variants to generate
+            example:
+              prompt: thunder rumbling in the distance
+      responses:
+        '200':
+          description: Generated audio URLs
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - result_urls
+                properties:
+                  result_urls:
+                    type: array
+                    items:
+                      type: string
+                      format: uri
+                    description: Array of URLs to the generated output files (audio, or video with SFX mixed in when output is "video")
+        '400':
+          description: Invalid request — missing or malformed parameters
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+        '401':
+          description: Unauthorized — missing or invalid Bearer token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+        '402':
+          description: Insufficient credits
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+        '500':
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+  /v2/text-to-sfx/v1.5/jobs:
+    post:
+      operationId: textToSfxJobCreate
+      summary: Create text-to-sfx async job
+      description: Start an async text-to-sfx generation job. Returns immediately with a `job_id`. Poll the job status endpoint until `status` is `succeeded` or `errored`.
+      tags:
+        - Sound Effects
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - prompt
+              properties:
+                prompt:
+                  type: string
+                  maxLength: 5000
+                  description: Text description of the sound to generate
+                  example: rain falling on leaves
+                duration_ms:
+                  type: integer
+                  minimum: 1000
+                  maximum: 10000
+                  default: 10000
+                  description: Duration in milliseconds (max 10000ms). Defaults to 10000.
+                num_samples:
+                  type: integer
+                  minimum: 1
+                  maximum: 4
+                  default: 1
+                  description: Number of audio variants to generate
+            example:
+              prompt: thunder rumbling in the distance
+      responses:
+        '202':
+          description: Job accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - job_id
+                  - job_url
+                  - estimated_ms
+                  - estimated_completion_at
+                properties:
+                  job_id:
+                    type: string
+                    format: uuid
+                    description: Unique identifier for the async job
+                  job_url:
+                    type: string
+                    description: Relative URL to poll for job status, e.g. `/v2/text-to-sfx/v1.5/jobs/{job_id}`. Append to your API base URL to form the full polling URL.
+                    example: /v2/text-to-sfx/v1.5/jobs/550e8400-e29b-41d4-a716-446655440001
+                  estimated_ms:
+                    type: integer
+                    description: Estimated completion time in milliseconds
+                  estimated_completion_at:
+                    type: string
+                    format: date-time
+                    description: ISO 8601 estimated completion timestamp
+        '400':
+          description: Invalid request — missing or malformed parameters
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+        '401':
+          description: Unauthorized — missing or invalid Bearer token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+        '402':
+          description: Insufficient credits
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+        '500':
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+  /v2/text-to-sfx/v1.5/jobs/{job_id}:
+    get:
+      operationId: textToSfxJobPoll
+      summary: Poll text-to-sfx job
+      description: 'Poll the status of an async text-to-sfx job. Returns a discriminated union on `status`: `processing`, `succeeded`, or `errored`.'
+      tags:
+        - Sound Effects
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Job ID returned from the job creation endpoint
+      responses:
+        '200':
+          description: Job status (discriminated union on status field)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - title: Processing
+                    type: object
+                    required:
+                      - job_id
+                      - status
+                      - created_at
+                      - estimated_completion_at
+                      - estimated_ms
+                      - progress_percent
+                      - request
+                    properties:
+                      job_id:
+                        type: string
+                      status:
+                        type: string
+                        enum:
+                          - processing
+                      created_at:
+                        type: string
+                        format: date-time
+                      estimated_completion_at:
+                        type: string
+                        format: date-time
+                      estimated_ms:
+                        type: integer
+                        description: ETA in milliseconds
+                      progress_percent:
+                        type: integer
+                        minimum: 0
+                        maximum: 90
+                        description: Estimated progress, capped at 90% until completion
+                      request:
+                        type: object
+                        description: Original request parameters echoed back
+                  - title: Succeeded
+                    type: object
+                    required:
+                      - job_id
+                      - status
+                      - created_at
+                      - completed_at
+                      - result
+                      - request
+                    properties:
+                      job_id:
+                        type: string
+                      status:
+                        type: string
+                        enum:
+                          - succeeded
+                      created_at:
+                        type: string
+                        format: date-time
+                      completed_at:
+                        type: string
+                        format: date-time
+                      result:
+                        type: object
+                        required:
+                          - result_urls
+                        properties:
+                          result_urls:
+                            type: array
+                            items:
+                              type: string
+                              format: uri
+                            description: Array of URLs to the generated output files (audio, or video with SFX mixed in when output is "video")
+                        description: The generation result — identical in shape to the response from the sync endpoint. Audio URLs for all endpoints except video-to-sfx with output="video", which returns the original video with SFX mixed in.
+                      request:
+                        type: object
+                  - title: Errored
+                    type: object
+                    required:
+                      - job_id
+                      - status
+                      - created_at
+                      - error
+                      - request
+                    properties:
+                      job_id:
+                        type: string
+                      status:
+                        type: string
+                        enum:
+                          - errored
+                      created_at:
+                        type: string
+                        format: date-time
+                      completed_at:
+                        type: string
+                        format: date-time
+                        nullable: true
+                      error:
+                        type: object
+                        required:
+                          - code
+                          - message
+                          - http_status
+                        properties:
+                          code:
+                            type: string
+                          message:
+                            type: string
+                          http_status:
+                            type: integer
+                      request:
+                        type: object
+                discriminator:
+                  propertyName: status
+              examples:
+                processing:
+                  summary: Job is still processing
+                  value:
+                    job_id: 550e8400-e29b-41d4-a716-446655440001
+                    status: processing
+                    created_at: '2024-01-15T10:30:00.000Z'
+                    estimated_completion_at: '2024-01-15T10:30:08.000Z'
+                    estimated_ms: 8000
+                    progress_percent: 45
+                    request:
+                      prompt: rain falling on leaves
+                      duration_ms: 10000
+                      num_samples: 2
+                succeeded:
+                  summary: Job completed successfully
+                  value:
+                    job_id: 550e8400-e29b-41d4-a716-446655440001
+                    status: succeeded
+                    created_at: '2024-01-15T10:30:00.000Z'
+                    completed_at: '2024-01-15T10:30:07.312Z'
+                    result:
+                      result_urls:
+                        - https://cdn.mirelo.ai/sfx/abc123_0.wav
+                        - https://cdn.mirelo.ai/sfx/abc123_1.wav
+                    request:
+                      prompt: rain falling on leaves
+                      duration_ms: 10000
+                      num_samples: 2
+                errored:
+                  summary: Job failed — upstream generation error
+                  value:
+                    job_id: 550e8400-e29b-41d4-a716-446655440001
+                    status: errored
+                    created_at: '2024-01-15T10:30:00.000Z'
+                    completed_at: '2024-01-15T10:30:05.201Z'
+                    error:
+                      code: generation_failed
+                      message: Generation failed due to an upstream error. Retry or contact support if this persists.
+                      http_status: 502
+                    request:
+                      prompt: rain falling on leaves
+                      duration_ms: 10000
+                      num_samples: 2
+                errored_precheck:
+                  summary: Job failed — video too short (precheck)
+                  value:
+                    job_id: 550e8400-e29b-41d4-a716-446655440001
+                    status: errored
+                    created_at: '2024-01-15T10:30:00.000Z'
+                    completed_at: '2024-01-15T10:30:01.543Z'
+                    error:
+                      code: video_too_short
+                      message: 'Video is too short: start_offset_ms (0ms) + duration_ms (15000ms) = 15000ms, but the video is only 8200ms long.'
+                      http_status: 400
+                    request:
+                      prompt: rain falling on leaves
+                      duration_ms: 10000
+                      num_samples: 2
+        '400':
+          description: Invalid request — missing or malformed parameters
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+        '401':
+          description: Unauthorized — missing or invalid Bearer token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+        '402':
+          description: Insufficient credits
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+        '404':
+          description: Job not found, expired, or belongs to a different API key
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+        '500':
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+  /v2/video-to-sfx/v1.5/preflight:
+    get:
+      operationId: videoToSfxPreflight
+      summary: Preflight — video-to-sfx v1.5
+      description: Returns the exact credit cost and estimated duration for a video-to-sfx generation. No generation occurs, no credits are deducted.
+      tags:
+        - Sound Effects
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: duration_ms
+          in: query
+          schema:
+            type: integer
+            default: 10000
+          description: Duration in milliseconds
+        - name: num_samples
+          in: query
+          schema:
+            type: integer
+            default: 1
+          description: Number of samples
+      responses:
+        '200':
+          description: Credit cost and ETA
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - credits
+                  - estimated_ms
+                properties:
+                  credits:
+                    type: integer
+                    description: Exact credit cost — matches what will be deducted on success
+                  estimated_ms:
+                    type: integer
+                    description: Estimated completion time in milliseconds (p98 calibrated)
+        '400':
+          description: Invalid request — missing or malformed parameters
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+        '401':
+          description: Unauthorized — missing or invalid Bearer token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+        '402':
+          description: Insufficient credits
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+        '500':
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+  /v2/video-to-sfx/v1.5/sync:
+    post:
+      operationId: videoToSfxSync
+      summary: Generate SFX from video (sync)
+      description: 'Generate sound effects from a video clip. Provide a `video` object with either `{type: "url", video_url}` or `{type: "asset", asset_id}`. Blocks until complete. Use `output` to control whether the response contains audio-only files or the original video with SFX mixed in.'
+      tags:
+        - Sound Effects
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - video
+                - duration_ms
+              properties:
+                video:
+                  oneOf:
+                    - title: URL
+                      type: object
+                      required:
+                        - type
+                        - video_url
+                      properties:
+                        type:
+                          type: string
+                          enum:
+                            - url
+                        video_url:
+                          type: string
+                          format: uri
+                          description: 'Publicly accessible video URL (no auth required). Supported containers: MP4, MOV, WebM, MKV. A video URL check is performed before generation — see the Video URL Check section.'
+                    - title: Asset
+                      type: object
+                      required:
+                        - type
+                        - asset_id
+                      properties:
+                        type:
+                          type: string
+                          enum:
+                            - asset
+                        asset_id:
+                          type: string
+                          description: Customer asset ID obtained from POST /v2/assets
+                  description: Video source — either a public URL or a pre-uploaded asset ID
+                duration_ms:
+                  type: integer
+                  minimum: 1000
+                  maximum: 600000
+                  description: Duration in milliseconds
+                start_offset_ms:
+                  type: integer
+                  minimum: 0
+                  description: Start offset into the video in milliseconds. Defaults to 0 (beginning of video).
+                num_samples:
+                  type: integer
+                  minimum: 1
+                  maximum: 4
+                  default: 1
+                  description: Number of audio variants to generate
+                output:
+                  type: string
+                  enum:
+                    - audio
+                    - video
+                  default: audio
+                  description: Output format. "audio" (default) returns SFX audio files only. "video" returns the original video with the generated SFX mixed in.
+            example:
+              video:
+                type: url
+                video_url: https://example.com/clip.mp4
+              duration_ms: 10000
+              num_samples: 1
+              output: audio
+      responses:
+        '200':
+          description: Generated output URLs. Audio files when output is "audio" (default); original video with SFX mixed in when output is "video".
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - result_urls
+                properties:
+                  result_urls:
+                    type: array
+                    items:
+                      type: string
+                      format: uri
+                    description: Array of URLs to the generated output files (audio, or video with SFX mixed in when output is "video")
+        '400':
+          description: 'Bad request or video URL check failure — error.code will be one of: invalid_request, video_url_unreachable, video_format_unsupported, video_too_short'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+        '401':
+          description: Unauthorized — missing or invalid Bearer token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+        '402':
+          description: Insufficient credits
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+        '422':
+          description: Video could not be decoded — error.code will be invalid_video. Ensure the video uses a supported codec (H.264, VP8, or VP9) and is not corrupted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+        '500':
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+  /v2/video-to-sfx/v1.5/jobs:
+    post:
+      operationId: videoToSfxJobCreate
+      summary: Create video-to-sfx async job
+      description: Start an async video-to-sfx generation job. Returns immediately with a `job_id`. Recommended for videos longer than 10 seconds.
+      tags:
+        - Sound Effects
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - video
+                - duration_ms
+              properties:
+                video:
+                  oneOf:
+                    - title: URL
+                      type: object
+                      required:
+                        - type
+                        - video_url
+                      properties:
+                        type:
+                          type: string
+                          enum:
+                            - url
+                        video_url:
+                          type: string
+                          format: uri
+                          description: 'Publicly accessible video URL (no auth required). Supported containers: MP4, MOV, WebM, MKV. A video URL check is performed before generation — see the Video URL Check section.'
+                    - title: Asset
+                      type: object
+                      required:
+                        - type
+                        - asset_id
+                      properties:
+                        type:
+                          type: string
+                          enum:
+                            - asset
+                        asset_id:
+                          type: string
+                          description: Customer asset ID obtained from POST /v2/assets
+                  description: Video source — either a public URL or a pre-uploaded asset ID
+                duration_ms:
+                  type: integer
+                  minimum: 1000
+                  maximum: 600000
+                  description: Duration in milliseconds
+                start_offset_ms:
+                  type: integer
+                  minimum: 0
+                  description: Start offset into the video in milliseconds. Defaults to 0 (beginning of video).
+                num_samples:
+                  type: integer
+                  minimum: 1
+                  maximum: 4
+                  default: 1
+                  description: Number of audio variants to generate
+                output:
+                  type: string
+                  enum:
+                    - audio
+                    - video
+                  default: audio
+                  description: Output format. "audio" (default) returns SFX audio files only. "video" returns the original video with the generated SFX mixed in.
+            example:
+              video:
+                type: url
+                video_url: https://example.com/clip.mp4
+              duration_ms: 10000
+              num_samples: 1
+              output: audio
+      responses:
+        '202':
+          description: Job accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - job_id
+                  - job_url
+                  - estimated_ms
+                  - estimated_completion_at
+                properties:
+                  job_id:
+                    type: string
+                    format: uuid
+                    description: Unique identifier for the async job
+                  job_url:
+                    type: string
+                    description: Relative URL to poll for job status, e.g. `/v2/text-to-sfx/v1.5/jobs/{job_id}`. Append to your API base URL to form the full polling URL.
+                    example: /v2/text-to-sfx/v1.5/jobs/550e8400-e29b-41d4-a716-446655440001
+                  estimated_ms:
+                    type: integer
+                    description: Estimated completion time in milliseconds
+                  estimated_completion_at:
+                    type: string
+                    format: date-time
+                    description: ISO 8601 estimated completion timestamp
+        '400':
+          description: 'Bad request or video URL check failure — error.code will be one of: invalid_request, video_url_unreachable, video_format_unsupported, video_too_short'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+        '401':
+          description: Unauthorized — missing or invalid Bearer token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+        '402':
+          description: Insufficient credits
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+        '422':
+          description: Video could not be decoded — error.code will be invalid_video. Ensure the video uses a supported codec (H.264, VP8, or VP9) and is not corrupted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+        '500':
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+  /v2/video-to-sfx/v1.5/jobs/{job_id}:
+    get:
+      operationId: videoToSfxJobPoll
+      summary: Poll video-to-sfx job
+      description: 'Poll the status of an async video-to-sfx job. Returns a discriminated union on `status`: `processing`, `succeeded`, or `errored`.'
+      tags:
+        - Sound Effects
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Job status (discriminated union on status field)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - title: Processing
+                    type: object
+                    required:
+                      - job_id
+                      - status
+                      - created_at
+                      - estimated_completion_at
+                      - estimated_ms
+                      - progress_percent
+                      - request
+                    properties:
+                      job_id:
+                        type: string
+                      status:
+                        type: string
+                        enum:
+                          - processing
+                      created_at:
+                        type: string
+                        format: date-time
+                      estimated_completion_at:
+                        type: string
+                        format: date-time
+                      estimated_ms:
+                        type: integer
+                        description: ETA in milliseconds
+                      progress_percent:
+                        type: integer
+                        minimum: 0
+                        maximum: 90
+                        description: Estimated progress, capped at 90% until completion
+                      request:
+                        type: object
+                        description: Original request parameters echoed back
+                  - title: Succeeded
+                    type: object
+                    required:
+                      - job_id
+                      - status
+                      - created_at
+                      - completed_at
+                      - result
+                      - request
+                    properties:
+                      job_id:
+                        type: string
+                      status:
+                        type: string
+                        enum:
+                          - succeeded
+                      created_at:
+                        type: string
+                        format: date-time
+                      completed_at:
+                        type: string
+                        format: date-time
+                      result:
+                        type: object
+                        required:
+                          - result_urls
+                        properties:
+                          result_urls:
+                            type: array
+                            items:
+                              type: string
+                              format: uri
+                            description: Array of URLs to the generated output files (audio, or video with SFX mixed in when output is "video")
+                        description: The generation result — identical in shape to the response from the sync endpoint. Audio URLs for all endpoints except video-to-sfx with output="video", which returns the original video with SFX mixed in.
+                      request:
+                        type: object
+                  - title: Errored
+                    type: object
+                    required:
+                      - job_id
+                      - status
+                      - created_at
+                      - error
+                      - request
+                    properties:
+                      job_id:
+                        type: string
+                      status:
+                        type: string
+                        enum:
+                          - errored
+                      created_at:
+                        type: string
+                        format: date-time
+                      completed_at:
+                        type: string
+                        format: date-time
+                        nullable: true
+                      error:
+                        type: object
+                        required:
+                          - code
+                          - message
+                          - http_status
+                        properties:
+                          code:
+                            type: string
+                          message:
+                            type: string
+                          http_status:
+                            type: integer
+                      request:
+                        type: object
+                discriminator:
+                  propertyName: status
+              examples:
+                processing:
+                  summary: Job is still processing
+                  value:
+                    job_id: 550e8400-e29b-41d4-a716-446655440001
+                    status: processing
+                    created_at: '2024-01-15T10:30:00.000Z'
+                    estimated_completion_at: '2024-01-15T10:30:08.000Z'
+                    estimated_ms: 8000
+                    progress_percent: 45
+                    request:
+                      video:
+                        type: url
+                        video_url: https://example.com/clip.mp4
+                      duration_ms: 10000
+                      num_samples: 1
+                      output: audio
+                succeeded:
+                  summary: Job completed successfully
+                  value:
+                    job_id: 550e8400-e29b-41d4-a716-446655440001
+                    status: succeeded
+                    created_at: '2024-01-15T10:30:00.000Z'
+                    completed_at: '2024-01-15T10:30:07.312Z'
+                    result:
+                      result_urls:
+                        - https://cdn.mirelo.ai/sfx/abc123_0.wav
+                        - https://cdn.mirelo.ai/sfx/abc123_1.wav
+                    request:
+                      video:
+                        type: url
+                        video_url: https://example.com/clip.mp4
+                      duration_ms: 10000
+                      num_samples: 1
+                      output: audio
+                errored:
+                  summary: Job failed — upstream generation error
+                  value:
+                    job_id: 550e8400-e29b-41d4-a716-446655440001
+                    status: errored
+                    created_at: '2024-01-15T10:30:00.000Z'
+                    completed_at: '2024-01-15T10:30:05.201Z'
+                    error:
+                      code: generation_failed
+                      message: Generation failed due to an upstream error. Retry or contact support if this persists.
+                      http_status: 502
+                    request:
+                      video:
+                        type: url
+                        video_url: https://example.com/clip.mp4
+                      duration_ms: 10000
+                      num_samples: 1
+                      output: audio
+                errored_precheck:
+                  summary: Job failed — video too short (precheck)
+                  value:
+                    job_id: 550e8400-e29b-41d4-a716-446655440001
+                    status: errored
+                    created_at: '2024-01-15T10:30:00.000Z'
+                    completed_at: '2024-01-15T10:30:01.543Z'
+                    error:
+                      code: video_too_short
+                      message: 'Video is too short: start_offset_ms (0ms) + duration_ms (15000ms) = 15000ms, but the video is only 8200ms long.'
+                      http_status: 400
+                    request:
+                      video:
+                        type: url
+                        video_url: https://example.com/clip.mp4
+                      duration_ms: 10000
+                      num_samples: 1
+                      output: audio
+        '400':
+          description: Invalid request — missing or malformed parameters
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+        '401':
+          description: Unauthorized — missing or invalid Bearer token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+        '402':
+          description: Insufficient credits
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+        '404':
+          description: Job not found or expired
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+        '500':
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+  /v2/me:
+    get:
+      operationId: getMe
+      summary: Get current user
+      description: Returns the authenticated user's ID, email, credit balance, and overage status.
+      tags:
+        - Account
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Current user information
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - id
+                  - email
+                  - credits_available
+                  - overage_enabled
+                properties:
+                  id:
+                    type: string
+                    description: User document ID
+                  email:
+                    type: string
+                    format: email
+                  credits_available:
+                    type: integer
+                    description: Current credit balance
+                  overage_enabled:
+                    type: boolean
+                    description: Whether the account can exceed its included credit limit
+        '400':
+          description: Invalid request — missing or malformed parameters
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+        '401':
+          description: Unauthorized — missing or invalid Bearer token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+        '402':
+          description: Insufficient credits
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+        '500':
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+  /v2/assets:
+    post:
+      operationId: createAsset
+      summary: Create upload asset
+      description: Creates a pre-signed upload URL. Upload your video directly to the returned `upload_url` via PUT, then use `asset_id` in generation requests.
+      tags:
+        - Assets
+      security:
+        - BearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                content_type:
+                  type: string
+                  description: MIME type of the file (e.g. video/mp4)
+                  example: video/mp4
+      responses:
+        '201':
+          description: Asset created
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - asset_id
+                  - upload_url
+                properties:
+                  asset_id:
+                    type: string
+                    description: 'Use as asset_id in the video object: {type: "asset", asset_id: "..."}'
+                  upload_url:
+                    type: string
+                    format: uri
+                    description: PUT your video file to this URL
+        '400':
+          description: Invalid request — missing or malformed parameters
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+        '401':
+          description: Unauthorized — missing or invalid Bearer token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+        '402':
+          description: Insufficient credits
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
+        '500':
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                      - http_status
+                    properties:
+                      code:
+                        type: string
+                        description: Machine-readable error code from the closed taxonomy
+                      message:
+                        type: string
+                        description: Human-readable description of the error
+                      http_status:
+                        type: integer
+                        description: HTTP status code mirroring the response status
